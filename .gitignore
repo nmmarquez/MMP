@@ -1,0 +1,11 @@
+.Rproj.user/*
+.Rhistory
+.RData
+.Ruserdata
+*.pdf
+readings/*
+*.docx
+cleaned_data/*
+codebooks/*
+data/*
+*.html

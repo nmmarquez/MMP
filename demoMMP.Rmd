@@ -1,0 +1,137 @@
+---
+title: "MMP"
+author: "Neal Marquez"
+date: "May 20, 2018"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+# Note that in the data 9999 often refers to unknown while
+# 8888 refers to somme measure being not applicable
+mmpDF <- read_csv("./data/pers161.csv", na = c("", "NA", 9999))
+mmpDF %>%
+    select(surveyyr, commun, surveypl) %>%
+    unique %>%
+    group_by(commun) %>%
+    summarize(Count=n()) %>%
+    select(Count) %>%
+    unlist %>%
+    table
+```
+
+```{r}
+comms <- c(9, 11, 37, 44, 45)
+
+mmpDF %>%
+    select(commun, weight, surveyyr, surveypl) %>%
+    group_by(commun, surveyyr, surveypl) %>%
+    summarize(weight=mean(weight), n=n()) %>%
+    mutate(hhs=weight*n)
+```
+
+```{r}
+mmpDF %>%
+    filter(surveypl==1) %>%
+    filter(age >=15 & commun %in% comms & sex == 1) %>%
+    mutate(everMig=usyr1 != 8888) %>%
+    mutate(ustrips=ifelse(ustrips==8888, NA, ustrips)) %>%
+    group_by(commun) %>%
+    ungroup %>%
+    select(everMig, ustrips, commun, weight) %>%
+    group_by(commun) %>%
+    summarize(
+        N=n(), 
+        Weight=mean(weight),
+        eMig=100 * mean(everMig, na.rm=T), 
+        Trips=mean(ustrips, na.rm=T),
+        missT=sum(is.na(ustrips)),
+        missM=sum(is.na(everMig)))
+
+mmpDF %>%
+    filter(age >=15 & commun %in% comms & sex == 1) %>%
+    mutate(ustrips=ifelse(ustrips==8888, NA, ustrips)) %>%
+    group_by(commun) %>%
+    filter(surveyyr == min(surveyyr)) %>%
+    ungroup %>%
+    select(ustrips, commun, weight) %>%
+    mutate(weight=weight/sum(weight*!is.na(ustrips), na.rm=T)) %>%
+    summarize(
+        wTrips=round(sum(ustrips*weight, na.rm=T), 2),
+        Trips=round(mean(ustrips, na.rm=T), 2))
+
+mmpDF %>%
+    filter(age >=15 & commun %in% comms & sex == 1) %>%
+    mutate(everMig=ifelse(is.na(usyr1), NA, usyr1 != 8888)) %>%
+    group_by(commun) %>%
+    filter(surveyyr == min(surveyyr)) %>%
+    ungroup %>%
+    select(everMig, commun, weight) %>%
+    mutate(weight=weight/sum(weight*!is.na(everMig), na.rm=T)) %>%
+    summarize(
+        wTrips=round(100*sum(everMig*weight, na.rm=T), 1),
+        Trips=round(100*mean(everMig, na.rm=T), 1))
+```
+
+## Plot first age at migration for males over 15 
+
+Here we try to replicate the plots from the paper "U.S. Immigration Reform and the Migration Dynamics of Mexican Males" by Khulan Altangerel and Jan C. van Ours. As part of their analysis they examine males risk of migration and look at how the probability of having never migrated decreases over age. Their analysis only goes up to the 154 study so we will exclude all results before community 154's first data collection in the year 2015.
+
+```{r}
+DFmig <- mmpDF %>%
+    # not us born
+    filter(usborn == 2) %>%
+    # remove all observations before commun 154
+    filter(commun <=154 & surveyyr <= 2015) %>%
+    # remove unknown data
+    filter(!is.na(usyr1)) %>%
+    # recode never migrated usyr1 to be the new NA
+    mutate(usyr1=ifelse(usyr1 == 8888, NA, usyr1)) %>%
+    # create age at time of interview
+    mutate(age=surveyyr-yrborn) %>%
+    # create age at first migration
+    mutate(usag1=usyr1-yrborn) %>%
+    # we only want male respondents and only if they are older than 15
+    filter(sex==1 & age >=15) %>%
+    # we only count migrations if they occured after the age of 14(>= 15)
+    filter(is.na(usag1) | usag1 >= 15) %>%
+    # select only a subset of the categories
+    select(usag1, weight, age) %>%
+    # estimate the age to which an individual contributes to teh denominator
+    rowwise %>%
+    mutate(ycontrib=min(age, usag1, na.rm=T)) %>%
+    ungroup
+
+data.frame(
+    pmig=sapply(14:35, function(x){
+        DFmig %>%
+            # select only the individuals who contributed up to that year
+            filter(ycontrib >= x) %>%
+            # calculate the weights for denominator so they sum to one
+            mutate(weight=weight/sum(weight)) %>%
+            #mutate(weight=1/nrow(.)) %>%
+            # lets get the contributors to numerator
+            filter(usag1 == x) %>%
+            select(weight) %>%
+            unlist %>%
+            sum
+        })) %>%
+    mutate(age=14:35) %>%
+    mutate(pnevermig=cumprod(1-pmig)) %>%
+    ggplot(aes(x=age, y=pnevermig)) +
+    geom_line() + 
+    theme_bw() + 
+    ylim(c(0.5, 1)) +
+    labs(x="Age", y="Probability of Never Migrated") +
+    ggtitle("Weighted Survival Rates of First Migration")
+```
+
+```{r}
+commDF <- read_csv("./data/commun161.csv")
+sort(names(commDF))
+```

@@ -1,0 +1,44 @@
+---
+title: "Re-analyzing U.S. Immigration Reform and Migration Dynamics"
+output: pdf_document
+author:  Adrien Allorant Jessica Canning  Neal Marquez
+---
+
+## Background  
+
+With the growing rates of migration occurring from Mexico to the United States at the end of the century the US government attempted to curtail further immigration by enacting the Immigration and Reform Act (IRCA) of 1986. The reform increased the amount of personnel manning the southern border as well as raised funding for border security in the form of physical infrastructure. In addition, the initiative also granted legal status to 2.7 million immigrants that were residing in the US at the time of passing[1]. The effects of the reform act are difficult to assess because of the changing nature of migration over time. In contrast to the end of the 20th century, recent years have seen a higher out-migration of Mexican nationals from the United States back to Mexico and in-migration is now at a record low for recent history.
+
+## Project Proposal  
+
+In Altengerel and Ours 2017 [1] the authors analyze the effect of the IRCA by analyzing shifts in both legal and undocumented immigration by using the Mexican Migration Project (MMP) Survey data. The MMP is an annual survey that collects data from communities within Mexico with reported levels of high migration and collects migration histories of individuals sampled from households with selected communities[2]. As of writing 161 communities have been sampled since 1987 leading to over 169,000 individuals interviewed. For this analysis the authors restrict themselves to males over the age of 15 and examine how the mechanism of first migration, either legal or undocumented, changes with the introduction of the IRCA.
+
+The authors of the paper take a competing hazards approach to model the event of migration, labeling individuals who migrate as being observed to a type of migration and those individuals who do not as being "censored". The model estimates for individuals within communities, and within households, however, the shared characteristics of these individuals is not accounted for. For our analysis we use a hierarchical approach to account for relatedness between individuals (micro units) at the community/household level (macro units). 
+
+$$
+\theta^j_i (t | x_t, D_t, v_j) = \lambda_j(t) \text{exp}(x_{it} \beta_j + \delta_{\text{IRCA},j}D_t + v_{hj})
+$$
+$$
+\begin{aligned}
+\begin{bmatrix}
+    v_{h1} \\
+    v_{h2} \\
+\end{bmatrix} \sim
+\text{MVN}\Bigg(
+\begin{bmatrix}
+    0 \\
+    0 \\
+\end{bmatrix},
+\begin{bmatrix}
+    \sigma^2_{v_{1}} & \rho\sigma_{v_{1}} \sigma_{v_{2}} \\
+    \rho\sigma_{v_{1}} \sigma_{v_{2}} & \sigma^2_{v_{2}} \\
+\end{bmatrix}
+\Bigg)
+\end{aligned}
+$$
+
+$\theta^j_i (t | x_t, D_t, v_j)$ represents the hazard function at time $t$, where $i$ is an individual $j$ denotes the type of migration, $D_t$ is an indicator variable for the enforcement of the IRCA, $x_{ij}$ and $\beta_{ij}$ are the covariates and coefficients respectively, and $v_{hj}$ indicates the household/community effect of the individual analyzed. Two effects are estimated per macro unit, one for legal and another for undocumented migration, and we will also analyze the correlation that exists between these two parameters as we expect increased hazard for one migration may effect the other.
+
+## References
+
+Altangerel, K., van Ours J.C. 2017. "U.S. Immigration Reform and the Migration Dynamics of Mexican Males". De Economist 165:463-485.  
+Massey, Douglas. 1987. "The Ethnosurvey in Theory and Practice". The International Migration Review, Vol. 21, No. 4.  

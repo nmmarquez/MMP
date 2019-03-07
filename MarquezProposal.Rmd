@@ -1,0 +1,84 @@
+---
+title: "Mexican Migration Project"
+author: "Neal Marquez"
+date: "February 1, 2019"
+output:
+  pdf_document:
+    fig_caption: yes
+urlcolor: blue
+---
+
+```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
+rm(list=ls())
+
+library(tidyverse)
+
+# Note that in the data 9999 often refers to unknown while
+# 8888 refers to somme measure being not applicable
+mmpDF <- read_csv("./data/pers161.csv", na = c("", "NA", 9999))
+
+nHouseholds <- mmpDF %>%
+    select(commun, hhnum) %>%
+    group_by(commun, hhnum) %>%
+    summarize(nhouse=length(unique(hhnum)), npeople=n()) %>%
+    nrow
+```
+
+The Mexican Migration Project MMP is an ongoing "Ethnographic Survey" that attempts to estimate and assess the drivers for changes of migration of Mexican nationals to the United States. Data has been collected nearly annually from 161 communities in Mexico and the United states through a representative household sampling strategy. Data are collected on the community, household, and person level on the events of migration that have occurred, the economic status of persons, health measures, as well as number of ties within particular communities. As of the 2017 publication of the MMP dataset the group has surveyed `r length(unique(mmpDF$commun))` communities, `r nHouseholds` households, and `r nrow(mmpDF)` individuals, further tabulation seen in Table 1 and Figure 1.
+
+In order to better understand this dataset and hierarchical modeling applications to survey data I propose that for this class we emulate and expand on the work originally presented by Altangerel and van Ours 2017 studying the effect of the 1986 US Immigration Reform and Control Act on various forms of migration. The work relies solely on MMP dataset for inference and uses a mix of community, household, and individual level covariates to understand how risk of legal vs undocumented migration shifts.
+
+The study can be expanded on in two immediate ways. The first being is the original datset had only used information collected up to community 154 in 2015. Second the model used to assess competing risk of migration, either legal or undocumented, does not explicitly account for the hierarchical nature of the data. A sensitivity analysis using both of these adjustments would serve as a robustness check to the original study. 
+
+The data is freely available to the public through [Princeton's Office of Population Research](https://opr.princeton.edu/archive/mmp/). Access is only contingent on signing a data agreement.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+mmpDF %>%
+    select(commun, hhnum) %>%
+    group_by(commun) %>%
+    summarize(nhouse=length(unique(hhnum)), npeople=n()) %>%
+    arrange(npeople) %>%
+    mutate(pph=npeople/nhouse) %>%
+    rename(Households=nhouse, People=npeople) %>%
+    summarize(
+        `N Communities` = n(),
+        `Avg Households per Community` = mean(Households),
+        `Avg People Per Household` = sum(pph * Households) / sum(Households)
+    ) %>%
+    knitr::kable(caption="Details of MMP Data Collection")
+```
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.width=5, fig.height=3,  fig.cap="\\label{fig:fig1}Distribution of Households and People Surveyed"}
+mmpDF %>%
+    select(commun, hhnum) %>%
+    group_by(commun) %>%
+    summarize(nhouse=length(unique(hhnum)), npeople=n()) %>%
+    arrange(npeople) %>%
+    mutate(`People per Household`=npeople/nhouse) %>%
+    rename(`Households per Community`=nhouse, People=npeople) %>%
+    select(-People) %>%
+    gather("Measure", "Value", -commun) %>%
+    filter(Measure == "Households per Community") %>%
+    bind_rows(
+        mmpDF %>%
+            select(commun, hhnum) %>%
+            group_by(commun, hhnum) %>%
+            summarize(npeople=n()) %>%
+            ungroup %>%
+            select(-hhnum) %>%
+            rename(Value=npeople) %>%
+            mutate(Measure="People per Household")
+    ) %>%
+    ggplot(aes(x=Value)) +
+    geom_histogram() +
+    theme_classic() +
+    facet_wrap(~Measure, scales="free") +
+    labs(x="", y="")
+```
+
+\newpage
+
+## References  
+
+Altangerel, K., van Ours J.C. 2017. "U.S. Immigration Reform and the Migration Dynamics of Mexican Males". De Economist 165:463-485.
