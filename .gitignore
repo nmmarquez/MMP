@@ -9,3 +9,6 @@ cleaned_data/*
 codebooks/*
 data/*
 *.html
+*.so
+*.o
+.Rproj.user

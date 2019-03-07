@@ -53,7 +53,7 @@ model{
         to_vector(zeta[c,]) ~ multi_normal(mu, Sigma);
     }
     
-    (rho+1)/2 ~ beta(1,1);
+    rho ~ uniform(-1,1);
 
     
     // data likelihood
