@@ -91,7 +91,9 @@ Type objective_function<Type>::operator() ()
         vector<Type> temp(2);
         temp[0] = zetas[c,0];
         temp[1] = zetas[c,1];
-        nll += MVNORM(Sigma)(temp);
+        // nll += MVNORM(Sigma)(temp);
+        nll -= dnorm(temp[0], Type(0.), exp(sigmas)[0], true);
+        nll -= dnorm(temp[1], Type(0.), exp(sigmas)[1], true);
     }
     
     REPORT(prob);

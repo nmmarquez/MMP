@@ -5,167 +5,114 @@ library(rstan)
 library(shinystan)
 library(TMB)
 library(tmbstan)
+library(brms)
+library(INLA)
 
 # load in the cleaned dataset from the MMP
 persFullDF <- read_rds("./cleaned_data/persFullDF.rds") %>%
-    as_tibble()
+    as_tibble() %>%
+    mutate(migration=as.numeric(migration)) %>%
+    mutate(ageC=case_when(
+        age == 15 ~ "age 15",
+        age == 16 ~ "age 16",
+        age == 17 ~ "age 17",
+        age == 18 ~ "age 18",
+        age == 19 ~ "age 19",
+        age == 20 ~ "age 20",
+        age == 21 ~ "age 21",
+        age == 22 ~ "age 22",
+        age == 23 ~ "age 23",
+        TRUE ~ "age 24+"
+    )) %>%
+    select(-age) %>%
+    mutate(IRCA=as.numeric(year >= 1987)) %>%
+    mutate(yearScale=year-min(year), yearScaleSq=yearScale^2) %>%
+    mutate(edyrsSq=edyrs^2, lnPop=log(COMPOP)) %>%
+    mutate(lnDeport=log(deportations), cohortSq=cohort^2)
 
-# subset for testing purposes
-sampleN <- Inf
+# This model takes about 35 min for a much smaller portion of the covariates
+# user   system  elapsed 
+# 71.271   18.840 2157.156 
+# system.time (b1 <- brm (
+#     Y ~ 1 + IRCA + ageC,
+#     data=persFullDF, family="bernoulli", chains=3, iter=3000, warmup=600,
+#     cores=4, prior=c(set_prior ("normal (0, 8)"))))
+# saveRDS(b1, file="cleaned_data/stanrun.Rds")
 
-ageFuncs <- list(
-    function(x) x == 16,
-    function(x) x == 17,
-    function(x) x == 18,
-    function(x) x == 19,
-    function(x) x == 20,
-    function(x) x == 21,
-    function(x) x == 22,
-    function(x) x == 23,
-    function(x) x >= 24
+fullList <- list()
+
+fullList$baseInla <- inla(
+    migration ~ 1 + IRCA + ageC,
+    family = "binomial",
+    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE))
+
+fullList$persInla <- inla(
+    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq,
+    family = "binomial",
+    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE))
+
+fullList$pcomInla <- inla(
+    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
+        pHeadUS,
+    family = "binomial",
+    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE)
 )
 
-# Subset data
-subPersFullDF <- filter(persFullDF, id <= sampleN)
-
-# Create Covariates
-X <- cbind(
-    # Intercept
-    rep(1, nrow(subPersFullDF)),
-    ## IRCA
-    as.numeric(subPersFullDF$year >= 1987),
-    # Dummy for ages
-    sapply(ageFuncs, function(f) as.integer(f(subPersFullDF$age))),
-    # Year variable starting at zero
-    subPersFullDF$year - min(subPersFullDF$year),
-    # year Trend squared
-    (subPersFullDF$year - min(subPersFullDF$year))^2,
-    ## Personal Effects
-    persFullDF$edyrs,
-    persFullDF$edyrs^2,
-    ## Comunity effects
-    log(persFullDF$COMPOP),
-    persFullDF$LFPM,
-    persFullDF$MINX2,
-    persFullDF$pHeadUS,
-    ## Policy in US
-    # unemployment
-    persFullDF$UR,
-    # deportations
-    log(persFullDF$deportations),
-    # cohort numbers
-    persFullDF$cohort,
-    persFullDF$cohort^2
-    )
-
-Y <- cbind(
-    as.numeric(!subPersFullDF$migration),
-    as.numeric(!subPersFullDF$lpr),
-    as.numeric(subPersFullDF$lpr)
+fullList$fixedInla <- inla(
+    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
+        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq,
+    family = "binomial",
+    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE)
 )
 
-Y[is.na(Y)] <- 0
-
-Yvec <- apply(Y, 1, function(x) which(x == 1))
-
-cidx <- as.integer(as.factor(subPersFullDF$commun))
-
-migData <- list(
-    Y = Y,
-    N = nrow(Y),
-    X = X,
-    K = ncol(X),
-    cidx = cidx,
-    C = max(cidx)
+fullList$hierINLA <- inla(
+    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
+        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq +
+        f(commun, model="iid"),
+    family = "binomial",
+    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE)
 )
 
+# run the same models but conditional on having migrated what is type of 
+# migration
 
-estimateMNLR <- function(Y, X, cidx, silent=T, mcmc=F, re=FALSE, ...){
-    model_name <- "./analysis/mnlr"
-    hideme <- capture.output(compile(paste0(model_name, ".cpp")))
-    
-    # load the model
-    dyn.load(dynlib(model_name))
-    
-    random <- "zetas"
-    Map <- list()
-    if(!re){
-        random <- NULL
-        Map[["zetas"]] <- factor(rep(NA, max(cidx)*2))
-        dim(Map[["zetas"]]) <- c(max(cidx),2)
-        Map[["sigmas"]] <- factor(rep(NA, 2))
-        Map[["logrho"]] <- factor(rep(NA, 1))
-    }
-    
-    # set the starting parameter points and data
-    Params <- list(
-        betas=matrix(0, nrow=ncol(X), ncol=2), 
-        sigmas=c(0,0),
-        logrho=0,
-        zetas=matrix(0, nrow=max(cidx), ncol=2)
-        )
-    Data <- list(
-        group=Y-1, 
-        covs=X,
-        cidx=cidx-1,
-        C=max(cidx)
-        )
+migDF <- persFullDF %>%
+    filter(!is.na(lpr)) %>%
+    mutate(lpr=as.numeric(lpr))
 
-    # build and optimize the objective function
-    Obj <- MakeADFun(
-        data=Data, parameters=Params, DLL="mnlr", silent=silent,
-        random=random, map=Map)
-    if(mcmc){
-        return(tmbstan(Obj, ...))
-    }
-    start.time <- Sys.time()
-    Opt <- nlminb(start=Obj$par, objective=Obj$fn, gradient=Obj$gr, ...)
-    runtime <- Sys.time() - start.time
-    sdrep <- TMB::sdreport(Obj, getJointPrecision=TRUE)
+migList <- list()
 
-    list(
-        obj = Obj,
-        opt = Opt,
-        runtime = runtime,
-        sd = sdrep)
-}
+migList$baseInla <- inla(
+    lpr ~ 1 + IRCA + ageC,
+    family = "binomial",
+    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE))
 
-predictMNLR <- function(X, model, draws=NULL){
-    if(is.null(model$par)){
-        allPars <- model$opt$par
-        model$par <- allPars[names(allPars) == "betas"]
-    }
-    G <- 3
-    if(is.null(X)){
-        # lets not redo this for every draw
-        X <- model.matrix(as.formula(model$call$formula[-2]), data)
-    }
-    if(!is.null(draws)){
-        # recursive process for simulations
-        betas_ <- mvtnorm::rmvnorm(draws, model$par, model$sd$cov.fixed)
-        y_prob <- array(0, dim=c(nrow(X), G, draws))
-        for(d in 1:draws){
-            m <- model
-            m$par <- betas_[d,] # treat the sims like true values
-            y_prob[,,d] <- predictMNLR(X, m) # rerun function with sim
-        }
-    }
-    else{
-        # transform vector of beta paramters into matrix for ease of use
-        betas_ <- matrix(model$par, ncol=G-1, nrow=ncol(X))
-        # get the ratios for the groups vs ref
-        ratio_ref <- exp(X %*% betas_)
-        # the response var is transformed to probability space
-        p1 <- apply(ratio_ref, 1, function(x) 1 / (1 + sum(x)))
-        y_prob <- unname(cbind(p1, ratio_ref * p1))
-    }
-    return(y_prob)
-}
+migList$persInla <- inla(
+    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq,
+    family = "binomial",
+    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE))
 
+migList$pcomInla <- inla(
+    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
+        pHeadUS,
+    family = "binomial",
+    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE)
+)
 
-testAge <- estimateMNLR(Yvec, X, cidx, F, 
-                        control=list(eval.max=1e9, iter.max=1e9))
-testAge$opt$convergence
-testAge$opt$message
-testPred <- predictMNLR(X, testAge, 100)
+migList$fixedInla <- inla(
+    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
+        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq,
+    family = "binomial",
+    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE)
+)
 
+migList$hierINLA <- inla(
+    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
+        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq +
+        f(commun, model="iid"),
+    family = "binomial",
+    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE)
+)
+
+save(migList, fullList, persFullDF, migDF, 
+     file = "./cleaned_data/inlaRuns.Rdata")
