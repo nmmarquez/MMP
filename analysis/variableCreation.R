@@ -161,12 +161,15 @@ persFullDF <- bind_rows(mclapply(1:nrow(persDF), function(i){
     subDF <- filter(persDF, id == i) %>%
         select(-surveyyr)
     migAge <- ifelse(is.na(subDF$migAge), 36, subDF$migAge)
+    maxAge <- max(min(c(persDF$surveyyr[1] - persDF$yrborn[i], 35)), migAge)
+    
     tibble(id=i, age=15:migAge) %>%
         left_join(subDF, by="id") %>%
         mutate(year=yrborn+age) %>%
         select(-migAge, -yrborn, -usyr1) %>%
         mutate(lpr=ifelse(max(year) == year, lpr, NA)) %>%
         mutate(migration=!is.na(lpr)) %>%
+        filter(age <= maxAge) %>%
         filter(age <= 35) %>%
         as.data.frame}, mc.cores = 5)) %>%
     left_join(commFullDF) %>%
