@@ -39,39 +39,37 @@ persFullDF <- read_rds("./cleaned_data/persFullDF.rds") %>%
 #     cores=4, prior=c(set_prior ("normal (0, 8)"))))
 # saveRDS(b1, file="cleaned_data/stanrun.Rds")
 
-fullList <- list()
-
-fullList$baseInla <- inla(
-    migration ~ 1 + IRCA + ageC,
-    family = "binomial",
-    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE))
-
-fullList$persInla <- inla(
-    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq,
-    family = "binomial",
-    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE))
-
-fullList$pcomInla <- inla(
-    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
-        pHeadUS,
-    family = "binomial",
-    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE)
-)
-
-fullList$fixedInla <- inla(
-    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
-        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq,
-    family = "binomial",
-    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE)
-)
-
-fullList$hierINLA <- inla(
-    migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
-        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq +
+ffFullModels <-list(
+    base = migration ~ 1 + IRCA + ageC,
+    person = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq,
+    commun = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop +
+        LFPM + MINX2 + pHeadUS,
+    full = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
+        yearScaleSq,
+    full = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
+        yearScaleSq,
+    inter = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
+        yearScaleSq + IRCA*edyrs + IRCA*edyrsSq,
+    personHier = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq +
         f(commun, model="iid"),
-    family = "binomial",
-    data = persFullDF,  control.compute = list(dic = TRUE, waic = TRUE)
+    hier = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
+        yearScaleSq + f(commun, model="iid"),
+    interHier = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
+        yearScaleSq + IRCA*edyrs + IRCA*edyrsSq +
+        f(commun, model="iid")
 )
+
+ffMigModels <- lapply(ffFullModels, function(x)
+    update(x, lpr ~ .))
+
+fullList <- lapply(ffFullModels, function(f){
+    inla(f, family="binomial", data=persFullDF, control.compute=list(config=T))
+})
 
 # run the same models but conditional on having migrated what is type of 
 # migration
@@ -80,39 +78,24 @@ migDF <- persFullDF %>%
     filter(!is.na(lpr)) %>%
     mutate(lpr=as.numeric(lpr))
 
-migList <- list()
+migList <- lapply(ffMigModels, function(f){
+    inla(f, family="binomial", data=migDF, control.compute=list(config=T))
+})
 
-migList$baseInla <- inla(
-    lpr ~ 1 + IRCA + ageC,
-    family = "binomial",
-    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE))
+migList$persInterHier <- inla(
+    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + IRCA*edyrs + IRCA*edyrsSq + 
+        f(commun, model="iid"), 
+    family="binomial", data=migDF, control.compute=list(config=T))
 
-migList$persInla <- inla(
-    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq,
-    family = "binomial",
-    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE))
+inlaBIC <- function(inlaModel){
+    k <- length(inlaModel$names.fixed) + inlaModel$nhyper -1
+    n <- length(inlaModel$misc$linkfunctions$link)
+    lnL <- inlaModel$mlik[1,1]
+    unname(log(n) * k  - 2 * lnL)
+}
 
-migList$pcomInla <- inla(
-    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
-        pHeadUS,
-    family = "binomial",
-    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE)
-)
+migListBIC <- sapply(migList, inlaBIC)
+fullListBIC <- sapply(fullList, inlaBIC)
 
-migList$fixedInla <- inla(
-    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
-        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq,
-    family = "binomial",
-    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE)
-)
-
-migList$hierINLA <- inla(
-    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM + MINX2 + 
-        pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + yearScaleSq +
-        f(commun, model="iid"),
-    family = "binomial",
-    data = migDF,  control.compute = list(dic = TRUE, waic = TRUE)
-)
-
-save(migList, fullList, persFullDF, migDF, 
+save(migList, fullList, persFullDF, migDF, migListBIC, fullListBIC,
      file = "./cleaned_data/inlaRuns.Rdata")
