@@ -1,11 +1,11 @@
 rm(list=ls())
 
-library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readr)
 library(rstan)
-library(shinystan)
 library(TMB)
-library(tmbstan)
-library(brms)
 library(INLA)
 
 load("./cleaned_data/inlaRuns.Rdata")
@@ -98,7 +98,9 @@ estYearDF <- rbind(
     left_join(select(yearDF, -IRCA), by=c("year")) %>%
     cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
 
-estDF %>%
+cfPlots <- list()
+
+cfPlots$inconsis <- estDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
     select(year, IRCA, Draw, p, age) %>%
     arrange(year, IRCA, Draw, age) %>%
@@ -116,9 +118,10 @@ estDF %>%
     geom_ribbon(aes(fill=Year), alpha=.3) +
     facet_wrap(~IRCA)+ 
     theme_classic() +
-    labs(x="Survival Till First Migration", y="Porbability")
+    labs(x="Age", y="Survival Porbability till First Migration") +
+    ggtitle("Counter Factual IRCA Effects for 2 Years (Consistent Controls)")
 
-estYearDF %>%
+cfPlots$year <- estYearDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
     select(year, IRCA, Draw, p, age) %>%
     arrange(year, IRCA, Draw, age) %>%
@@ -136,9 +139,10 @@ estYearDF %>%
     geom_ribbon(aes(fill=Year), alpha=.3) +
     facet_wrap(~IRCA)+ 
     theme_classic() +
-    labs(x="Survival Till First Migration", y="Porbability")
+    labs(x="Age", y="Survival Porbability till First Migration") +
+    ggtitle("Counter Factual IRCA Effects for 2 Years (Time Appropriate Controls)")
 
-estYearDF %>%
+cfPlots$yearDiff <- estYearDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
     select(year, IRCA, Draw, p, age) %>%
     arrange(year, IRCA, Draw, age) %>%
@@ -157,5 +161,155 @@ estYearDF %>%
     geom_line(aes(color=Year)) +
     geom_ribbon(aes(fill=Year), alpha=.3) +
     theme_classic() +
-    labs(x="Difference In Survival For IRCA", y="Porbability")
+    labs(y="Increased Probability", x="Age") +
+    ggtitle("Increased Survival For IRCA") +
+    geom_hline(yintercept=0, linetype=2)
 
+eduYearDF <- rbind(
+    meanDF %>%
+        mutate(year=1991, yearScale=14, IRCA=F, edyrs=6, edyrsSq=6) %>%
+        cbind(ageC=agegroups, age=15:35),
+    meanDF %>%
+        mutate(year=1991, yearScale=14, IRCA=F, edyrs=16, edyrsSq=16^2) %>%
+        cbind(ageC=agegroups, age=15:35),
+    meanDF %>%
+        mutate(year=1991, yearScale=14, IRCA=T, edyrs=6, edyrsSq=6) %>%
+        cbind(ageC=agegroups, age=15:35),
+    meanDF %>%
+        mutate(year=1991, yearScale=14, IRCA=T, edyrs=16, edyrsSq=16^2) %>%
+        cbind(ageC=agegroups, age=15:35)) %>%
+    select(-yearScale, -lnDeport, -UR, -yearScaleSq) %>%
+    left_join(select(yearDF, -IRCA), by=c("year")) %>%
+    cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
+
+cfPlots$edu <- eduYearDF %>%
+    gather("Draw", "p", `1`:`1000`) %>%
+    select(edyrs, IRCA, Draw, p, age) %>%
+    arrange(edyrs, IRCA, Draw, age) %>%
+    group_by(edyrs, IRCA, Draw) %>%
+    mutate(Survival=cumprod(1-p)) %>%
+    group_by(edyrs, IRCA, age) %>%
+    summarise(
+        mu=median(Survival), 
+        lo=quantile(Survival, probs=.025),
+        hi=quantile(Survival, probs=.975)) %>%
+    ungroup %>%
+    mutate(Years=as.character(edyrs)) %>%
+    ggplot(aes(x=age, y=mu, ymin=lo, ymax=hi, group=Years)) +
+    geom_line(aes(color=Years)) +
+    geom_ribbon(aes(fill=Years), alpha=.3) +
+    facet_wrap(~IRCA)+ 
+    theme_classic() +
+    labs(x="Age", y="Survival Porbability till First Migration") +
+    ggtitle("Counter Factual IRCA Effects by Education Level")
+
+cfPlots$eduDiff <- eduYearDF %>%
+    gather("Draw", "p", `1`:`1000`) %>%
+    select(edyrs, IRCA, Draw, p, age) %>%
+    arrange(edyrs, IRCA, Draw, age) %>%
+    group_by(edyrs, IRCA, Draw) %>%
+    mutate(Survival=cumprod(1-p)) %>%
+    group_by(edyrs, age, Draw) %>%
+    summarise(diffSurv=diff(Survival)) %>%
+    group_by(edyrs, age) %>%
+    summarise(
+        mu=median(diffSurv), 
+        lo=quantile(diffSurv, probs=.025),
+        hi=quantile(diffSurv, probs=.975)) %>%
+    ungroup %>%
+    mutate(Year=as.character(edyrs)) %>%
+    ggplot(aes(x=age, y=mu, ymin=lo, ymax=hi, group=Year)) +
+    geom_line(aes(color=Year)) +
+    geom_ribbon(aes(fill=Year), alpha=.3) +
+    theme_classic() +
+    labs(y="Increased Probability", x="Age") +
+    ggtitle("Increased Survival For IRCA by Education Level") +
+    geom_hline(yintercept=0, linetype=2)
+
+survDF <- read.csv("./data/pers161.csv") %>%
+    group_by(commun) %>%
+    summarize(surveyyr=min(surveyyr))
+    
+
+cfPlots$re <- fullList$interHier$summary.random$commun %>%
+    rename(mu=`0.5quant`, lo=`0.025quant`, hi=`0.975quant`) %>%
+    arrange(mu) %>%
+    mutate(ID2=1:n(), commun=ID) %>%
+    left_join(survDF, by="commun") %>%
+    ggplot(aes(x=ID2, y=mu, ymin=lo, ymax=hi, color=surveyyr)) +
+    geom_point() +
+    geom_errorbar() +
+    coord_flip() +
+    theme_classic() +
+    geom_hline(yintercept=0, linetype=2) + 
+    theme(
+        axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank()) +
+    labs(x="", y="Random Effect Estimate", color="Survey\nYear") +
+    scale_color_distiller(palette = "Spectral") +
+    ggtitle("Random Effect Estimates")
+    
+communTest <- fullList$interHier$summary.random$commun %>%
+    arrange(mean) %>%
+    filter(mean == max(mean) | ID == 135) %>%
+    pull(ID)
+
+
+communDF <- persFullDF %>%
+    filter(commun %in% communTest) %>%
+    select(commun, edyrs, lnPop, LFPM, MINX2, pHeadUS) %>%
+    group_by(commun) %>%
+    summarize_all(mean) %>%
+    mutate(year=1997, cohort=10, cohortSq=100, edyrsSq=edyrs^2) %>%
+    left_join(yearDF) %>%
+    rbind(mutate(., IRCA=0)) %>%
+    mutate(key=1) %>%
+    left_join(tibble(ageC=agegroups, age=15:35, key=1)) %>%
+    cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
+    
+cfPlots$commun <- communDF %>%
+    gather("Draw", "p", `1`:`1000`) %>%
+    select(commun, IRCA, Draw, p, age) %>%
+    arrange(commun, IRCA, Draw, age) %>%
+    group_by(commun, IRCA, Draw) %>%
+    mutate(Survival=cumprod(1-p)) %>%
+    group_by(commun, IRCA, age) %>%
+    summarise(
+        mu=median(Survival), 
+        lo=quantile(Survival, probs=.025),
+        hi=quantile(Survival, probs=.975)) %>%
+    ungroup %>%
+    mutate(Community=as.character(commun)) %>%
+    ggplot(aes(x=age, y=mu, ymin=lo, ymax=hi, group=Community)) +
+    geom_line(aes(color=Community)) +
+    geom_ribbon(aes(fill=Community), alpha=.3) +
+    facet_wrap(~IRCA)+ 
+    theme_classic() +
+    labs(x="Age", y="Survival Porbability till First Migration") +
+    ggtitle("Counter Factual IRCA Effects by Community")
+
+cfPlots$communDiff <- communDF %>%
+    gather("Draw", "p", `1`:`1000`) %>%
+    select(commun, IRCA, Draw, p, age) %>%
+    arrange(commun, IRCA, Draw, age) %>%
+    group_by(commun, IRCA, Draw) %>%
+    mutate(Survival=cumprod(1-p)) %>%
+    group_by(commun, age, Draw) %>%
+    summarise(diffSurv=diff(Survival)) %>%
+    group_by(commun, age) %>%
+    summarise(
+        mu=median(diffSurv), 
+        lo=quantile(diffSurv, probs=.025),
+        hi=quantile(diffSurv, probs=.975)) %>%
+    ungroup %>%
+    mutate(Community=as.character(commun)) %>%
+    ggplot(aes(x=age, y=mu, ymin=lo, ymax=hi, group=Community)) +
+    geom_line(aes(color=Community)) +
+    geom_ribbon(aes(fill=Community), alpha=.3) +
+    theme_classic() +
+    labs(y="Increased Probability", x="Age") +
+    ggtitle("Increased Survival For IRCA by Community") +
+    geom_hline(yintercept=0, linetype=2)
+
+saveRDS(cfPlots, file="./plots/cfPlots.Rds")
