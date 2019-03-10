@@ -336,5 +336,5 @@ covPlot <- fullList$interHier$summary.fixed %>%
 tibble(
     Model=names(fullListBIC),
     BIC=round(unname(fullListBIC), 2)) %>%
-    arrange(-BIC) %>%
+    arrange(BIC) %>%
     knitr::kable(format="latex")
