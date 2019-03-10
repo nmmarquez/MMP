@@ -313,3 +313,28 @@ cfPlots$communDiff <- communDF %>%
     geom_hline(yintercept=0, linetype=2)
 
 saveRDS(cfPlots, file="./plots/cfPlots.Rds")
+
+covPlot <- fullList$interHier$summary.fixed %>%
+    mutate(Covariate=row.names(.)) %>%
+    select(-kld) %>%
+    mutate_if(is.numeric, exp) %>%
+    filter(Covariate !="(Intercept)") %>%
+    filter(!startsWith(Covariate, "age")) %>%
+    rename(mu=`0.5quant`, lo=`0.025quant`, hi=`0.975quant`) %>%
+    arrange(mu) %>%
+    mutate(Covariate=factor(Covariate, levels=Covariate)) %>%
+    mutate(tx=paste0(round(mu,2), "(", round(lo,2), ",", round(hi,2), ")")) %>%
+    ggplot(aes(x=Covariate, y=mu, ymin=lo, ymax=hi, label=tx)) +
+    geom_point() +
+    geom_errorbar() +
+    theme_classic() +
+    coord_flip() +
+    geom_hline(yintercept=1, linetype=2) +
+    geom_text(aes(y=ifelse(mu<1.8, hi+.16, lo-.16))) +
+    labs(y="Estimate")
+
+tibble(
+    Model=names(fullListBIC),
+    BIC=round(unname(fullListBIC), 2)) %>%
+    arrange(-BIC) %>%
+    knitr::kable(format="latex")
