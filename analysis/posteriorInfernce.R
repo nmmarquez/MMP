@@ -331,7 +331,20 @@ covPlot <- fullList$interHier$summary.fixed %>%
     coord_flip() +
     geom_hline(yintercept=1, linetype=2) +
     geom_text(aes(y=ifelse(mu<1.8, hi+.16, lo-.16))) +
-    labs(y="Estimate")
+    labs(y="Estimate") + 
+    theme(text = element_text(size=20))
+
+ggsave(covPlot, filename="./plots/covariateEst.png")
+ggsave(cfPlots$edu + theme(text = element_text(size=20)), 
+       filename="./plots/edu.png")
+ggsave(cfPlots$eduDiff + theme(text = element_text(size=20)), 
+       filename="./plots/eduDiff.png")
+ggsave(cfPlots$commun + theme(text = element_text(size=20)), 
+       filename="./plots/commun.png")
+ggsave(cfPlots$communDiff + theme(text = element_text(size=20)), 
+       filename="./plots/communDiff.png")
+ggsave(cfPlots$re + theme(text = element_text(size=20)), 
+       filename="./plots/wrrrrry.png")
 
 tibble(
     Model=names(fullListBIC),

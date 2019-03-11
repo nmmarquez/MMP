@@ -12,3 +12,4 @@ data/*
 *.so
 *.o
 .Rproj.user
+*.png
