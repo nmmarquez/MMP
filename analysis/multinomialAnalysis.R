@@ -9,6 +9,7 @@ library(brms)
 library(INLA)
 
 # load in the cleaned dataset from the MMP
+set.seed(123)
 persFullDF <- read_rds("./cleaned_data/persFullDF.rds") %>%
     as_tibble() %>%
     mutate(migration=as.numeric(migration)) %>%
@@ -24,11 +25,23 @@ persFullDF <- read_rds("./cleaned_data/persFullDF.rds") %>%
         age == 23 ~ "age 23",
         TRUE ~ "age 24+"
     )) %>%
+    mutate(eduC=case_when(
+        edyrs <= 2 ~ "0-2 year Edu",
+        edyrs <= 5 ~ "3-5 years Edu",
+        edyrs <= 8 ~ "6-8 years Edu",
+        edyrs <= 11 ~ "9-11 years Edu",
+        TRUE ~ "12+ years Edu"
+    )) %>%
     select(-age) %>%
     mutate(IRCA=as.numeric(year >= 1987)) %>%
     mutate(yearScale=year-min(year), yearScaleSq=yearScale^2) %>%
     mutate(edyrsSq=edyrs^2, lnPop=log(COMPOP)) %>%
-    mutate(lnDeport=log(deportations), cohortSq=cohort^2)
+    mutate(lnDeport=log(deportations), cohortSq=cohort^2) %>%
+    # randomly sample one individual for each household
+    group_by(commun, hhnum) %>%
+    filter(id == sample(unique(id), 1)) %>%
+    ungroup() %>%
+    mutate(commun2=commun)
 
 # This model takes about 35 min for a much smaller portion of the covariates
 # user   system  elapsed 
@@ -39,53 +52,81 @@ persFullDF <- read_rds("./cleaned_data/persFullDF.rds") %>%
 #     cores=4, prior=c(set_prior ("normal (0, 8)"))))
 # saveRDS(b1, file="cleaned_data/stanrun.Rds")
 
+ffFullModelsEduGroup <-list(
+    base = migration ~ 1 + IRCA + ageC,
+    person = migration ~ 1 + IRCA * eduC + ageC,
+    commun = migration ~ 1 + IRCA + ageC + lnPop + LFPM + MINX2 + pHeadUS,
+    perscommun = migration ~ 1 + IRCA * eduC + ageC + lnPop + LFPM +
+        MINX2 + pHeadUS,
+    full = migration ~ 1 + IRCA * eduC + ageC +lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + yearScale
+)
+
 ffFullModels <-list(
     base = migration ~ 1 + IRCA + ageC,
-    person = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq,
-    commun = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop +
-        LFPM + MINX2 + pHeadUS,
-    full = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
-        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
-        yearScaleSq,
-    full = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
-        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
-        yearScaleSq,
-    inter = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
-        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
-        yearScaleSq + IRCA*edyrs + IRCA*edyrsSq,
-    personHier = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq +
-        f(commun, model="iid"),
-    hier = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
-        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
-        yearScaleSq + f(commun, model="iid"),
-    interHier = migration ~ 1 + IRCA + ageC + edyrs + edyrsSq + lnPop + LFPM +
-        MINX2 + pHeadUS + UR + lnDeport + cohort + cohortSq + yearScale + 
-        yearScaleSq + IRCA*edyrs + IRCA*edyrsSq +
-        f(commun, model="iid")
+    person = migration ~ 1 + IRCA * edyrs + edyrsSq + ageC,
+    commun = migration ~ 1 + IRCA + ageC + lnPop + LFPM + MINX2 + pHeadUS,
+    perscommun = migration ~ 1 + IRCA * edyrs + edyrsSq + ageC + lnPop + LFPM +
+        MINX2 + pHeadUS,
+    full = migration ~ 1 + IRCA * edyrs + edyrsSq + ageC +lnPop + LFPM +
+        MINX2 + pHeadUS + UR + lnDeport + cohort + yearScale
 )
 
 ffMigModels <- lapply(ffFullModels, function(x)
     update(x, lpr ~ .))
 
-fullList <- lapply(ffFullModels, function(f){
-    inla(f, family="binomial", data=persFullDF, control.compute=list(config=T))
+# lets check out the BMA
+bmaFit <- bic.glm(
+    x = model.matrix(ffFullModels$full[-2], persFullDF)[,-1],
+    y = persFullDF$migration,
+    glm.family="binomial")
+
+imageplot.bma(bmaFit)
+
+# lets remove the year and cohort effect as they dont seem to be providing much
+ffFullModels$full <- update(ffFullModels$full, . ~ . - yearScale - cohort)
+ffFullModelsEduGroup$full <- update(
+    ffFullModelsEduGroup$full, . ~ . - yearScale - cohort)
+
+glmList <- lapply(ffFullModels, function(f){
+    glm(f, family="binomial", data=persFullDF)
+})
+
+glmListGroup <- lapply(ffFullModelsEduGroup, function(f){
+    glm(f, family="binomial", data=persFullDF)
+})
+
+ffRandModels <- lapply(ffFullModels[4:5], function(f_){
+    update(f_, . ~ . + f(commun, model="iid"))
+})
+
+ffRandSlope <- lapply(ffRandModels, function(f_){
+    update(f_, . ~ . + f(commun2, IRCA, model="iid"))
+})
+
+reIntList <- lapply(ffRandModels, function(f_){
+    inla(f_, family="binomial", data=persFullDF, control.compute=list(config=T))
+})
+
+reSlopeList <- lapply(ffRandSlope, function(f_){
+    inla(f_, family="binomial", data=persFullDF, control.compute=list(config=T))
 })
 
 # run the same models but conditional on having migrated what is type of 
 # migration
 
-migDF <- persFullDF %>%
-    filter(!is.na(lpr)) %>%
-    mutate(lpr=as.numeric(lpr))
-
-migList <- lapply(ffMigModels, function(f){
-    inla(f, family="binomial", data=migDF, control.compute=list(config=T))
-})
-
-migList$persInterHier <- inla(
-    lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + IRCA*edyrs + IRCA*edyrsSq + 
-        f(commun, model="iid"), 
-    family="binomial", data=migDF, control.compute=list(config=T))
+# migDF <- persFullDF %>%
+#     filter(!is.na(lpr)) %>%
+#     mutate(lpr=as.numeric(lpr))
+# 
+# migList <- lapply(ffMigModels, function(f){
+#     inla(f, family="binomial", data=migDF, control.compute=list(config=T))
+# })
+# 
+# migList$persInterHier <- inla(
+#     lpr ~ 1 + IRCA + ageC + edyrs + edyrsSq + IRCA*edyrs + IRCA*edyrsSq + 
+#         f(commun, model="iid"), 
+#     family="binomial", data=migDF, control.compute=list(config=T))
 
 inlaBIC <- function(inlaModel){
     k <- length(inlaModel$names.fixed) + inlaModel$nhyper -1
@@ -94,8 +135,12 @@ inlaBIC <- function(inlaModel){
     unname(log(n) * k  - 2 * lnL)
 }
 
-migListBIC <- sapply(migList, inlaBIC)
-fullListBIC <- sapply(fullList, inlaBIC)
 
-save(migList, fullList, persFullDF, migDF, migListBIC, fullListBIC,
+modelBICList <- list(
+    reInt = lapply(reIntList, inlaBIC),
+    reSlope = lapply(reSlopeList, inlaBIC),
+    fixed = sapply(glmList, BIC),
+    fixedGroupEdu = sapply(glmListGroup, BIC))
+
+save(persFullDF, reIntList, modelBICList,
      file = "./cleaned_data/inlaRuns.Rdata")

@@ -1,11 +1,11 @@
 rm(list=ls())
 
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(readr)
+library(tidyverse)
 library(rstan)
+library(shinystan)
 library(TMB)
+library(tmbstan)
+library(brms)
 library(INLA)
 
 load("./cleaned_data/inlaRuns.Rdata")
@@ -27,7 +27,7 @@ samplePars <- function(model, n){
 }
 
 if(!file.exists("./cleaned_data/fullPars.Rds")){
-    fullPars <- samplePars(fullList$interHier, 1000)
+    fullPars <- samplePars(reIntList$perscommun, 1000)
     saveRDS(fullPars, file="./cleaned_data/fullPars.Rds")
 }
 
@@ -96,7 +96,7 @@ estYearDF <- rbind(
         cbind(ageC=agegroups, age=15:35)) %>%
     select(-yearScale, -lnDeport, -UR, -yearScaleSq) %>%
     left_join(select(yearDF, -IRCA), by=c("year")) %>%
-    cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
+    cbind(predictNew(reIntList$perscommun, ., 1000, pars=fullPars))
 
 cfPlots <- list()
 
@@ -167,20 +167,20 @@ cfPlots$yearDiff <- estYearDF %>%
 
 eduYearDF <- rbind(
     meanDF %>%
-        mutate(year=1991, yearScale=14, IRCA=F, edyrs=6, edyrsSq=6) %>%
+        mutate(year=1991, yearScale=14, IRCA=F, edyrs=7, edyrsSq=7^2) %>%
         cbind(ageC=agegroups, age=15:35),
     meanDF %>%
         mutate(year=1991, yearScale=14, IRCA=F, edyrs=16, edyrsSq=16^2) %>%
         cbind(ageC=agegroups, age=15:35),
     meanDF %>%
-        mutate(year=1991, yearScale=14, IRCA=T, edyrs=6, edyrsSq=6) %>%
+        mutate(year=1991, yearScale=14, IRCA=T, edyrs=7, edyrsSq=7^2) %>%
         cbind(ageC=agegroups, age=15:35),
     meanDF %>%
         mutate(year=1991, yearScale=14, IRCA=T, edyrs=16, edyrsSq=16^2) %>%
         cbind(ageC=agegroups, age=15:35)) %>%
     select(-yearScale, -lnDeport, -UR, -yearScaleSq) %>%
     left_join(select(yearDF, -IRCA), by=c("year")) %>%
-    cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
+    cbind(predictNew(reIntList$perscommun, ., 1000, pars=fullPars))
 
 cfPlots$edu <- eduYearDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
@@ -229,9 +229,8 @@ cfPlots$eduDiff <- eduYearDF %>%
 survDF <- read.csv("./data/pers161.csv") %>%
     group_by(commun) %>%
     summarize(surveyyr=min(surveyyr))
-    
 
-cfPlots$re <- fullList$interHier$summary.random$commun %>%
+cfPlots$re <- reIntList$perscommun$summary.random$commun %>%
     rename(mu=`0.5quant`, lo=`0.025quant`, hi=`0.975quant`) %>%
     arrange(mu) %>%
     mutate(ID2=1:n(), commun=ID) %>%
@@ -249,15 +248,15 @@ cfPlots$re <- fullList$interHier$summary.random$commun %>%
     labs(x="", y="Random Effect Estimate", color="Survey\nYear") +
     scale_color_distiller(palette = "Spectral") +
     ggtitle("Random Effect Estimates")
-    
-communTest <- fullList$interHier$summary.random$commun %>%
+
+communTest <- reIntList$perscommun$summary.random$commun %>%
     arrange(mean) %>%
-    filter(mean == max(mean) | ID == 135) %>%
+    filter(mean == max(mean) | min(abs(mean)) == mean) %>%
     pull(ID)
 
 
 communDF <- persFullDF %>%
-    filter(commun %in% communTest) %>%
+    #filter(commun %in% communTest) %>%
     select(commun, edyrs, lnPop, LFPM, MINX2, pHeadUS) %>%
     group_by(commun) %>%
     summarize_all(mean) %>%
@@ -266,8 +265,8 @@ communDF <- persFullDF %>%
     rbind(mutate(., IRCA=0)) %>%
     mutate(key=1) %>%
     left_join(tibble(ageC=agegroups, age=15:35, key=1)) %>%
-    cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
-    
+    cbind(predictNew(reIntList$perscommun, ., 1000, pars=fullPars))
+
 cfPlots$commun <- communDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
     select(commun, IRCA, Draw, p, age) %>%
@@ -346,8 +345,3 @@ ggsave(cfPlots$communDiff + theme(text = element_text(size=20)),
 ggsave(cfPlots$re + theme(text = element_text(size=20)), 
        filename="./plots/wrrrrry.png")
 
-tibble(
-    Model=names(fullListBIC),
-    BIC=round(unname(fullListBIC), 2)) %>%
-    arrange(BIC) %>%
-    knitr::kable(format="latex")
