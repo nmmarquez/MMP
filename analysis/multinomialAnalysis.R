@@ -1,12 +1,14 @@
+.libPaths(c("~/R3.5/", .libPaths()))
 rm(list=ls())
 
-library(tidyverse)
-library(rstan)
-library(shinystan)
+library(dplyr)
+library(tidyr)
+library(tibble)
 library(TMB)
-library(tmbstan)
-library(brms)
 library(INLA)
+library(readr)
+library(BMA)
+library(glmmTMB)
 
 # load in the cleaned dataset from the MMP
 set.seed(123)
@@ -38,10 +40,10 @@ persFullDF <- read_rds("./cleaned_data/persFullDF.rds") %>%
     mutate(edyrsSq=edyrs^2, lnPop=log(COMPOP)) %>%
     mutate(lnDeport=log(deportations), cohortSq=cohort^2) %>%
     # randomly sample one individual for each household
-    group_by(commun, hhnum) %>%
-    filter(id == sample(unique(id), 1)) %>%
+    # group_by(commun, hhnum) %>%
+    # filter(id == sample(unique(id), 1)) %>%
     ungroup() %>%
-    mutate(commun2=commun)
+    mutate(commun2=commun, hhid=paste0(commun, "_", hhnum))
 
 # This model takes about 35 min for a much smaller portion of the covariates
 # user   system  elapsed 
@@ -84,9 +86,9 @@ bmaFit <- bic.glm(
 imageplot.bma(bmaFit)
 
 # lets remove the year and cohort effect as they dont seem to be providing much
-ffFullModels$full <- update(ffFullModels$full, . ~ . - yearScale - cohort)
-ffFullModelsEduGroup$full <- update(
-    ffFullModelsEduGroup$full, . ~ . - yearScale - cohort)
+#ffFullModels$full <- update(ffFullModels$full, . ~ . - yearScale - cohort)
+#ffFullModelsEduGroup$full <- update(
+#    ffFullModelsEduGroup$full, . ~ . - yearScale - cohort)
 
 glmList <- lapply(ffFullModels, function(f){
     glm(f, family="binomial", data=persFullDF)
@@ -96,20 +98,23 @@ glmListGroup <- lapply(ffFullModelsEduGroup, function(f){
     glm(f, family="binomial", data=persFullDF)
 })
 
+sapply(glmList, BIC)
+sapply(glmListGroup, BIC)
+
 ffRandModels <- lapply(ffFullModels[4:5], function(f_){
-    update(f_, . ~ . + f(commun, model="iid"))
+    update(f_, . ~ . + (1|commun) + (1|hhid))
 })
 
-ffRandSlope <- lapply(ffRandModels, function(f_){
-    update(f_, . ~ . + f(commun2, IRCA, model="iid"))
+ffRandSlope <- lapply(ffFullModels[4:5], function(f_){
+    update(f_, . ~ . + (1+IRCA|commun) + (1|hhid))
 })
 
 reIntList <- lapply(ffRandModels, function(f_){
-    inla(f_, family="binomial", data=persFullDF, control.compute=list(config=T))
+    glmmTMB(f_, family="binomial", data=persFullDF, verbose=T)
 })
 
 reSlopeList <- lapply(ffRandSlope, function(f_){
-    inla(f_, family="binomial", data=persFullDF, control.compute=list(config=T))
+    glmmTMB(f_, family="binomial", data=persFullDF, verbose=T)
 })
 
 # run the same models but conditional on having migrated what is type of 
@@ -136,11 +141,34 @@ inlaBIC <- function(inlaModel){
 }
 
 
+simulateCommRandomEffects <- function(model, n=1000){
+    nCommun <- nrow(ranef(model)$cond$commun)
+    nRE <- ncol(ranef(model)$cond$commun)
+    effects <- c(as.matrix(ranef(model)$cond$commun))
+    Sigma <- matrix(0, nrow=nCommun*nRE, ncol=nCommun*nRE)
+    diag(Sigma) <- model$sdr$diag.cov.random[1:(nCommun*nRE)]
+    if(nRE>1){
+        rho <- attr(summary(model)$varcor$cond$commun, "correlation")[1,2]
+        for(i in 1:nCommun){
+            Sigma[i, i+nCommun] <- sqrt(Sigma[i, i]) * 
+                sqrt(Sigma[i+nCommun, i+nCommun]) * rho
+            Sigma[i+nCommun, i] <- Sigma[i,i+nCommun] 
+        }
+    }
+    draws <- mvtnorm::rmvnorm(n, effects, Sigma)
+    
+    reDraws <- lapply(1:nRE, function(i){
+        t(draws[,(nCommun*(i-1)+1):(nCommun*i)])
+    })
+    names(reDraws) <- names(ranef(model)$cond$commun)
+    reDraws
+}
+
 modelBICList <- list(
-    reInt = lapply(reIntList, inlaBIC),
-    reSlope = lapply(reSlopeList, inlaBIC),
+    reInt = lapply(reIntList, BIC),
+    reSlope = lapply(reSlopeList, BIC),
     fixed = sapply(glmList, BIC),
     fixedGroupEdu = sapply(glmListGroup, BIC))
 
-save(persFullDF, reIntList, modelBICList,
-     file = "./cleaned_data/inlaRuns.Rdata")
+save(persFullDF, reIntList, modelBICList, reSlopeList,
+     file = "./cleaned_data/tmbRuns.Rdata")

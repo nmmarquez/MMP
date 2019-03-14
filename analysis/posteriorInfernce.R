@@ -1,14 +1,42 @@
+.libPaths(c("~/R3.5/", .libPaths()))
 rm(list=ls())
 
-library(tidyverse)
-library(rstan)
-library(shinystan)
+library(dplyr)
+library(tidyr)
+library(tibble)
 library(TMB)
-library(tmbstan)
-library(brms)
 library(INLA)
+library(glmmTMB)
+library(ggplot2)
+library(plotly)
+library(stringr)
 
-load("./cleaned_data/inlaRuns.Rdata")
+load("./cleaned_data/tmbRuns.Rdata")
+
+simulateCommRandomEffects <- function(model, n=1000){
+    nCommun <- nrow(ranef(model)$cond$commun)
+    nRE <- ncol(ranef(model)$cond$commun)
+    effects <- c(as.matrix(ranef(model)$cond$commun))
+    Sigma <- matrix(0, nrow=nCommun*nRE, ncol=nCommun*nRE)
+    diag(Sigma) <- model$sdr$diag.cov.random[1:(nCommun*nRE)]
+    if(nRE>1){
+        rho <- attr(summary(model)$varcor$cond$commun, "correlation")[1,2]
+        for(i in 1:nCommun){
+            Sigma[i, i+nCommun] <- sqrt(Sigma[i, i]) * 
+                sqrt(Sigma[i+nCommun, i+nCommun]) * rho
+            Sigma[i+nCommun, i] <- Sigma[i,i+nCommun] 
+        }
+    }
+    draws <- mvtnorm::rmvnorm(n, effects, Sigma)
+    
+    reDraws <- lapply(1:nRE, function(i){
+        z <- t(draws[,(nCommun*(i-1)+1):(nCommun*i)])
+        row.names(z) <- paste0("commun:", unique(persFullDF$commun))
+        z
+    })
+    names(reDraws) <- names(ranef(model)$cond$commun)
+    reDraws
+}
 
 samplePars <- function(model, n){
     drawList <- inla.posterior.sample(n, model)
@@ -26,12 +54,12 @@ samplePars <- function(model, n){
     list(beta=betaDraws, commun=communDraws)
 }
 
-if(!file.exists("./cleaned_data/fullPars.Rds")){
-    fullPars <- samplePars(reIntList$perscommun, 1000)
-    saveRDS(fullPars, file="./cleaned_data/fullPars.Rds")
-}
+# if(!file.exists("./cleaned_data/fullPars.Rds")){
+#     fullPars <- samplePars(reIntList$perscommun, 1000)
+#     saveRDS(fullPars, file="./cleaned_data/fullPars.Rds")
+# }
 
-fullPars <- read_rds("./cleaned_data/fullPars.Rds")
+# fullPars <- read_rds("./cleaned_data/fullPars.Rds")
 
 predictNew <- function(model, DF, n=1000, prob=T, pars=NULL){
     if(is.null(pars)){
@@ -50,6 +78,29 @@ predictNew <- function(model, DF, n=1000, prob=T, pars=NULL){
     linPred
 }
 
+predictNew2 <- function(model, DF, n=1000, prob=T){
+    ff <- update(
+        model$call$formula[-2], 
+        ~ . -(1 | hhid) - (1 | commun) - (1 + IRCA | commun))
+    X <- model.matrix(ff, DF)
+    idx <- names(model$fit$par) == "beta"
+    b_ <- model$fit$par[idx]
+    S_ <- model$sdr$cov.fixed[idx,idx]
+    linPred <- X %*% t(mvtnorm::rmvnorm(n, b_, S_))
+    if("commun" %in% names(DF)){
+        reDraws <- simulateCommRandomEffects(model, n)
+        commIDX <- paste0("commun:", DF$commun)
+        for(j in names(reDraws)){
+            linPred <- linPred + reDraws[[j]][commIDX,] * 
+                sapply(1:n, function(i) X[,j])
+        }
+    }
+    if(prob){
+        linPred <- arm::invlogit(linPred)
+    }
+    linPred
+}
+
 agegroups <- c(unique(persFullDF$ageC), rep(unique(persFullDF$ageC)[10], 11))
 
 yearDF <- persFullDF %>%
@@ -61,7 +112,7 @@ yearDF <- persFullDF %>%
 
 meanDF <- persFullDF %>% 
     distinct(id, .keep_all=T) %>%
-    select(-ageC, -statebrn) %>%
+    select(-ageC, -statebrn, -hhid, -commun2, -eduC) %>%
     summarize_all(mean) %>%
     select(-commun) %>%
     mutate(edyrsSq=edyrs^2, cohortSq=cohort^2)
@@ -79,7 +130,7 @@ estDF <- rbind(
     meanDF %>%
         mutate(year=1991, yearScale=14, IRCA=T) %>%
         cbind(ageC=agegroups, age=15:35)) %>%
-    cbind(predictNew(fullList$interHier, ., 1000, pars=fullPars))
+    cbind(predictNew2(reSlopeList$full, ., 1000))
 
 estYearDF <- rbind(
     meanDF %>%
@@ -96,7 +147,7 @@ estYearDF <- rbind(
         cbind(ageC=agegroups, age=15:35)) %>%
     select(-yearScale, -lnDeport, -UR, -yearScaleSq) %>%
     left_join(select(yearDF, -IRCA), by=c("year")) %>%
-    cbind(predictNew(reIntList$perscommun, ., 1000, pars=fullPars))
+    cbind(predictNew2(reSlopeList$full, ., 1000))
 
 cfPlots <- list()
 
@@ -167,20 +218,20 @@ cfPlots$yearDiff <- estYearDF %>%
 
 eduYearDF <- rbind(
     meanDF %>%
-        mutate(year=1991, yearScale=14, IRCA=F, edyrs=7, edyrsSq=7^2) %>%
+        mutate(year=1991, yearScale=14, IRCA=F, edyrs=3, edyrsSq=3^2) %>%
         cbind(ageC=agegroups, age=15:35),
     meanDF %>%
         mutate(year=1991, yearScale=14, IRCA=F, edyrs=16, edyrsSq=16^2) %>%
         cbind(ageC=agegroups, age=15:35),
     meanDF %>%
-        mutate(year=1991, yearScale=14, IRCA=T, edyrs=7, edyrsSq=7^2) %>%
+        mutate(year=1991, yearScale=14, IRCA=T, edyrs=3, edyrsSq=3^2) %>%
         cbind(ageC=agegroups, age=15:35),
     meanDF %>%
         mutate(year=1991, yearScale=14, IRCA=T, edyrs=16, edyrsSq=16^2) %>%
         cbind(ageC=agegroups, age=15:35)) %>%
     select(-yearScale, -lnDeport, -UR, -yearScaleSq) %>%
     left_join(select(yearDF, -IRCA), by=c("year")) %>%
-    cbind(predictNew(reIntList$perscommun, ., 1000, pars=fullPars))
+    cbind(predictNew2(reSlopeList$full, ., 1000))
 
 cfPlots$edu <- eduYearDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
@@ -226,37 +277,99 @@ cfPlots$eduDiff <- eduYearDF %>%
     ggtitle("Increased Survival For IRCA by Education Level") +
     geom_hline(yintercept=0, linetype=2)
 
+# eduYearDF %>%
+#     gather("Draw", "p", `1`:`1000`) %>%
+#     select(edyrs, IRCA, Draw, p, age) %>%
+#     arrange(edyrs, IRCA, Draw, age) %>%
+#     group_by(edyrs, IRCA, Draw) %>%
+#     mutate(Survival=cumprod(1-p)) %>%
+#     group_by(edyrs, age, Draw) %>%
+#     summarise(diffSurv=diff(Survival)) %>%
+#     arrange(edyrs, age, Draw, edyrs) %>%
+#     group_by(age, Draw) %>%
+#     summarise(diffSurv=diff(diffSurv)) %>%
+#     group_by(age) %>%
+#     summarise(
+#         mu=median(diffSurv), 
+#         lo=quantile(diffSurv, probs=.025),
+#         hi=quantile(diffSurv, probs=.975)) %>%
+#     ungroup %>%
+#     ggplot(aes(x=age, y=mu, ymin=lo, ymax=hi)) +
+#     geom_line() +
+#     geom_ribbon(alpha=.3) +
+#     theme_classic() +
+#     labs(y="Increased Probability", x="Age") +
+#     ggtitle("Increased Survival For IRCA by Education Level") +
+#     geom_hline(yintercept=0, linetype=2)
+
 survDF <- read.csv("./data/pers161.csv") %>%
     group_by(commun) %>%
     summarize(surveyyr=min(surveyyr))
 
-cfPlots$re <- reIntList$perscommun$summary.random$commun %>%
-    rename(mu=`0.5quant`, lo=`0.025quant`, hi=`0.975quant`) %>%
-    arrange(mu) %>%
-    mutate(ID2=1:n(), commun=ID) %>%
+reEffects <- simulateCommRandomEffects(reSlopeList$full, 1000)
+b0 <- reSlopeList$full$fit$par[1]
+bIRCA <- reSlopeList$full$fit$par[2]
+
+reDF <- bind_rows(
+    tibble(
+        mu = apply(reEffects$`(Intercept)`, 1, median) + b0,
+        lo = apply(reEffects$`(Intercept)`, 1, quantile, probs=.025) + b0,
+        hi = apply(reEffects$`(Intercept)`, 1, quantile, probs=.975) + b0,
+        commun = row.names(reEffects$IRCA),
+        ov=b0,
+        effect="Intercept"),
+    tibble(
+        mu = apply(reEffects$IRCA, 1, median) + bIRCA,
+        lo = apply(reEffects$IRCA, 1, quantile, probs=.025) + bIRCA,
+        hi = apply(reEffects$IRCA, 1, quantile, probs=.975) + bIRCA,
+        commun = row.names(reEffects$IRCA),
+        ov=bIRCA,
+        effect="IRCA")) %>%
+    mutate(commun=as.numeric(str_replace(commun, "commun:", "")))
+    
+cfPlots$re <- reDF %>%
+    group_by(effect) %>%
+    arrange(effect, mu) %>%
+    mutate(ID2=1:n()) %>%
+    ungroup() %>%
     left_join(survDF, by="commun") %>%
     ggplot(aes(x=ID2, y=mu, ymin=lo, ymax=hi, color=surveyyr)) +
     geom_point() +
     geom_errorbar() +
     coord_flip() +
     theme_classic() +
-    geom_hline(yintercept=0, linetype=2) + 
+    geom_hline(aes(yintercept=ov), linetype=2) + 
     theme(
         axis.line.y = element_blank(),
         axis.ticks.y = element_blank(),
         axis.text.y = element_blank()) +
     labs(x="", y="Random Effect Estimate", color="Survey\nYear") +
     scale_color_distiller(palette = "Spectral") +
-    ggtitle("Random Effect Estimates")
+    ggtitle("Random Effect Estimates") +
+    facet_wrap(~effect)
+    
+cfPlots$reBivar <- reDF %>%
+    select(-ov) %>%
+    nest(mu, lo, hi, .key = "temp") %>%
+    spread(effect, temp) %>%
+    unnest(Intercept, IRCA, .sep = '_') %>%
+    mutate(IRCAsig=IRCA_lo > 0 | IRCA_hi < 0) %>%
+    ggplot(aes(
+        x=Intercept_mu, xmin=Intercept_lo, xmax=Intercept_hi,
+        y=IRCA_mu, ymin=IRCA_lo, ymax=IRCA_hi, color=IRCAsig, text=commun)) +
+    geom_point() +
+    geom_errorbar(alpha=.3, size=.2) +
+    geom_errorbarh(alpha=.3, size=.2) +
+    theme_classic() +
+    geom_vline(xintercept=b0, linetype=2) +
+    geom_hline(yintercept=bIRCA, linetype=2) +
+    labs(x="Intercept", y="IRCA", title="Random Effects Estimates",
+         color="Signficant\nIRCA Effect")
 
-communTest <- reIntList$perscommun$summary.random$commun %>%
-    arrange(mean) %>%
-    filter(mean == max(mean) | min(abs(mean)) == mean) %>%
-    pull(ID)
-
+communTest <- c(22, 60)
 
 communDF <- persFullDF %>%
-    #filter(commun %in% communTest) %>%
+    filter(commun %in% communTest) %>%
     select(commun, edyrs, lnPop, LFPM, MINX2, pHeadUS) %>%
     group_by(commun) %>%
     summarize_all(mean) %>%
@@ -265,7 +378,7 @@ communDF <- persFullDF %>%
     rbind(mutate(., IRCA=0)) %>%
     mutate(key=1) %>%
     left_join(tibble(ageC=agegroups, age=15:35, key=1)) %>%
-    cbind(predictNew(reIntList$perscommun, ., 1000, pars=fullPars))
+    cbind(predictNew2(reSlopeList$full, ., 1000))
 
 cfPlots$commun <- communDF %>%
     gather("Draw", "p", `1`:`1000`) %>%
@@ -280,6 +393,7 @@ cfPlots$commun <- communDF %>%
         hi=quantile(Survival, probs=.975)) %>%
     ungroup %>%
     mutate(Community=as.character(commun)) %>%
+    mutate(IRCA=as.logical(IRCA)) %>%
     ggplot(aes(x=age, y=mu, ymin=lo, ymax=hi, group=Community)) +
     geom_line(aes(color=Community)) +
     geom_ribbon(aes(fill=Community), alpha=.3) +
@@ -311,15 +425,12 @@ cfPlots$communDiff <- communDF %>%
     ggtitle("Increased Survival For IRCA by Community") +
     geom_hline(yintercept=0, linetype=2)
 
-saveRDS(cfPlots, file="./plots/cfPlots.Rds")
-
-covPlot <- fullList$interHier$summary.fixed %>%
-    mutate(Covariate=row.names(.)) %>%
-    select(-kld) %>%
+cfPlots$covPlot <- summary(reSlopeList$full)$coefficients$cond %>%
+    as.data.frame() %>%
+    mutate(Covariate=row.names(.), mu=Estimate) %>%
+    mutate(lo=mu-1.96*`Std. Error`, hi=mu+1.96*`Std. Error`) %>%
+    select(-Estimate:-`Pr(>|z|)`) %>%
     mutate_if(is.numeric, exp) %>%
-    filter(Covariate !="(Intercept)") %>%
-    filter(!startsWith(Covariate, "age")) %>%
-    rename(mu=`0.5quant`, lo=`0.025quant`, hi=`0.975quant`) %>%
     arrange(mu) %>%
     mutate(Covariate=factor(Covariate, levels=Covariate)) %>%
     mutate(tx=paste0(round(mu,2), "(", round(lo,2), ",", round(hi,2), ")")) %>%
@@ -329,10 +440,10 @@ covPlot <- fullList$interHier$summary.fixed %>%
     theme_classic() +
     coord_flip() +
     geom_hline(yintercept=1, linetype=2) +
-    geom_text(aes(y=ifelse(mu<1.8, hi+.16, lo-.16))) +
-    labs(y="Estimate") + 
-    theme(text = element_text(size=20))
+    geom_text(aes(y=ifelse(mu<5, hi+.9, lo-.9))) +
+    labs(y="Estimate")
 
+saveRDS(cfPlots, file="./plots/cfPlots.Rds")
 ggsave(covPlot, filename="./plots/covariateEst.png")
 ggsave(cfPlots$edu + theme(text = element_text(size=20)), 
        filename="./plots/edu.png")
